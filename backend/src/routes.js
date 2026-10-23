@@ -2,10 +2,10 @@
  * routes.js — Express Router for device endpoints
  *
  * Endpoints:
- *   GET  /api/devices          → list all devices
- *   GET  /api/devices/:id      → single device
+ *   GET  /api/devices              → list all devices
+ *   GET  /api/devices/:id          → single device
  *   POST /api/devices/:id/command  → send a command (on / off / toggle)
- *   GET  /api/history          → recent command history
+ *   GET  /api/history              → recent command history
  */
 
 const { Router } = require("express");
@@ -15,6 +15,7 @@ const {
   executeCommand,
   getHistory,
 } = require("./deviceManager");
+const { publishDeviceState, isConnected } = require("./mqttClient");
 
 const router = Router();
 
@@ -45,7 +46,24 @@ router.post("/devices/:id/command", (req, res) => {
 
   try {
     const { device, entry } = executeCommand(req.params.id, command.toLowerCase());
-    res.json({ device, entry });
+
+    // ── Stage 2B: publish resolved state to MQTT broker ────────────
+    // This is best-effort: if the broker is down the REST response
+    // still succeeds but the `mqtt` field tells the caller the
+    // command was NOT forwarded to the physical layer.
+    const mqttResult = publishDeviceState(device.id, device.status);
+
+    res.json({
+      device,
+      entry,
+      mqtt: {
+        brokerConnected: isConnected(),
+        published:       mqttResult.published,
+        topic:           mqttResult.topic,
+        payload:         mqttResult.payload,
+        ...(mqttResult.error && { error: mqttResult.error }),
+      },
+    });
   } catch (err) {
     // deviceManager throws with a statusCode property
     res.status(err.statusCode || 500).json({ error: err.message });
